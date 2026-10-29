@@ -1,4 +1,4 @@
-```python
+
 #!/usr/bin/env python3
 
 """Generate an 800x600 grayscale dashboard for Kindle 4."""
