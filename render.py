@@ -1,106 +1,139 @@
-
 import argparse
 import datetime as dt
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
 
-# Kindle 4 screen dimensions
-W, H = 800, 600
 
-WHITE = 255
+# ============================================================
+# DASHBOARD SETTINGS
+# ============================================================
+
+W = 800
+H = 600
+
 BLACK = 0
-GREY = 90
-LIGHT_GREY = 175
+WHITE = 255
 
-# Location settings can be overridden with environment variables.
-LAT = float(os.environ.get("KD_LAT", "53.35"))
-LON = float(os.environ.get("KD_LON", "-6.26"))
+TIMEZONE = "Europe/Dublin"
+
+LATITUDE = float(os.environ.get("KD_LAT", "53.35"))
+LONGITUDE = float(os.environ.get("KD_LON", "-6.27"))
 CITY = os.environ.get("KD_CITY", "Dublin")
-TIMEZONE = os.environ.get("KD_TIMEZONE", "Europe/Dublin")
-
-FONT_PATHS = {
-    "regular": [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-    ],
-    "bold": [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-    ],
-}
 
 
-def load_font(weight, size):
-    """Load a font available on GitHub's Ubuntu runner."""
-    for path in FONT_PATHS[weight]:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size)
-            except OSError:
-                pass
+# ============================================================
+# FONTS
+# ============================================================
+
+def load_font(style, size):
+    """Load a font available on GitHub Actions or Windows."""
+
+    possible_fonts = {
+        "bold": [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        ],
+        "regular": [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        ],
+    }
+
+    for font_path in possible_fonts.get(style, []):
+        if os.path.exists(font_path):
+            return ImageFont.truetype(font_path, size)
+
     return ImageFont.load_default()
 
 
-F_TITLE = load_font("bold", 29)
-F_HEADING = load_font("bold", 25)
-F_TEMP = load_font("bold", 39)
-F_NORMAL = load_font("regular", 18)
-F_SMALL = load_font("regular", 16)
-F_RAIN = load_font("bold", 17)
+F_TITLE = load_font("bold", 28)
+F_HEADING = load_font("bold", 21)
+F_TEMP = load_font("bold", 38)
+F_NORMAL = load_font("regular", 17)
+F_SMALL = load_font("regular", 15)
 
+# Smaller font to stop MORNING and AFTERNOON overlapping their boxes.
+F_TINY = load_font("regular", 12)
+
+
+# ============================================================
+# WEATHER CODE DESCRIPTIONS
+# ============================================================
 
 WEATHER_CODES = {
-    0: "Clear",
-    1: "Mostly clear",
+    0: "Clear sky",
+    1: "Mainly clear",
     2: "Partly cloudy",
     3: "Overcast",
     45: "Fog",
-    48: "Fog",
+    48: "Depositing rime fog",
     51: "Light drizzle",
-    53: "Drizzle",
-    55: "Heavy drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
     56: "Freezing drizzle",
-    57: "Freezing drizzle",
+    57: "Heavy freezing drizzle",
     61: "Light rain",
-    63: "Rain",
+    63: "Moderate rain",
     65: "Heavy rain",
     66: "Freezing rain",
-    67: "Freezing rain",
+    67: "Heavy freezing rain",
     71: "Light snow",
-    73: "Snow",
+    73: "Moderate snow",
     75: "Heavy snow",
     77: "Snow grains",
-    80: "Showers",
-    81: "Showers",
-    82: "Heavy showers",
+    80: "Light rain showers",
+    81: "Moderate rain showers",
+    82: "Heavy rain showers",
     85: "Snow showers",
     86: "Heavy snow showers",
     95: "Thunderstorm",
-    96: "Thunderstorm",
-    99: "Heavy thunderstorm",
+    96: "Thunderstorm with hail",
+    99: "Heavy thunderstorm with hail",
 }
 
 
+# ============================================================
+# WEATHER DATA
+# ============================================================
+
 def fetch_weather():
-    """Fetch today's and tomorrow's weather and hourly rain forecasts."""
-    params = {
-        "latitude": LAT,
-        "longitude": LON,
+    """
+    Retrieve today's and tomorrow's weather from Open-Meteo.
+
+    No API key is required.
+    """
+
+    parameters = {
+        "latitude": LATITUDE,
+        "longitude": LONGITUDE,
         "timezone": TIMEZONE,
         "forecast_days": 2,
-        "temperature_unit": "celsius",
-        "current": "temperature_2m,weather_code",
+        "current": (
+            "temperature_2m,"
+            "relative_humidity_2m,"
+            "apparent_temperature,"
+            "is_day,"
+            "precipitation,"
+            "weather_code"
+        ),
         "daily": (
             "weather_code,"
             "temperature_2m_max,"
-            "temperature_2m_min"
+            "temperature_2m_min,"
+            "precipitation_probability_max,"
+            "precipitation_sum"
         ),
         "hourly": (
+            "temperature_2m,"
             "precipitation_probability,"
             "precipitation,"
             "weather_code"
@@ -109,7 +142,7 @@ def fetch_weather():
 
     url = (
         "https://api.open-meteo.com/v1/forecast?"
-        + urllib.parse.urlencode(params)
+        + urllib.parse.urlencode(parameters)
     )
 
     request = urllib.request.Request(
@@ -118,26 +151,61 @@ def fetch_weather():
     )
 
     with urllib.request.urlopen(request, timeout=20) as response:
-        return json.load(response)
+        data = json.loads(response.read().decode("utf-8"))
+
+    return data
+
+
+def weather_description(code):
+    """Convert a weather code into a readable description."""
+
+    if code is None:
+        return "Weather unavailable"
+
+    return WEATHER_CODES.get(int(code), "Unknown conditions")
+
+
+def format_temperature(value):
+    """Format a temperature as a whole number of degrees Celsius."""
+
+    if value is None:
+        return "--°C"
+
+    return f"{round(value)}°C"
+
+
+def format_hour(hour):
+    """Convert a 24-hour hour number into a label such as 6am or 5pm."""
+
+    suffix = "am" if hour < 12 else "pm"
+    hour_12 = hour % 12 or 12
+
+    return f"{hour_12}{suffix}"
 
 
 def rain_label(probability, amount):
-    """Format hourly rain probability and expected precipitation."""
+    """Create a short precipitation description."""
+
     if probability is None:
-        probability_text = "--"
+        probability_text = "?"
     else:
         probability_text = f"{round(probability)}%"
 
     if amount is None:
         amount_text = ""
     else:
-        amount_text = f"{amount:.1f}mm"
+        amount_text = f" | {amount:.1f}mm"
 
-    return probability_text, amount_text
+    return f"Rain: {probability_text}{amount_text}"
 
+
+# ============================================================
+# TEXT HELPERS
+# ============================================================
 
 def fit_text(draw, text, font, max_width):
-    """Shorten text when necessary to fit the screen."""
+    """Shorten text until it fits within the specified width."""
+
     text = str(text)
 
     if draw.textlength(text, font=font) <= max_width:
@@ -146,273 +214,593 @@ def fit_text(draw, text, font, max_width):
     while text and draw.textlength(text + "...", font=font) > max_width:
         text = text[:-1]
 
-    return text.rstrip() + "..."
+    return text + "..." if text else "..."
 
+
+def wrap_text(draw, text, font, max_width):
+    """Wrap a sentence into lines that fit within a specified width."""
+
+    words = str(text).split()
+    lines = []
+    current_line = ""
+
+    for word in words:
+        candidate = f"{current_line} {word}".strip()
+
+        if draw.textlength(candidate, font=font) <= max_width:
+            current_line = candidate
+        else:
+            if current_line:
+                lines.append(current_line)
+
+            # Handle an unusually long individual word.
+            if draw.textlength(word, font=font) > max_width:
+                lines.append(fit_text(draw, word, font, max_width))
+                current_line = ""
+            else:
+                current_line = word
+
+    if current_line:
+        lines.append(current_line)
+
+    return lines
+
+
+# ============================================================
+# RANDOM FACT
+# ============================================================
+
+class FactParser(HTMLParser):
+    """Extract headings from the Random Fact Generator webpage."""
+
+    def __init__(self):
+        super().__init__()
+        self.in_heading = False
+        self.heading_parts = []
+        self.headings = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("h1", "h2", "h3"):
+            self.in_heading = True
+            self.heading_parts = []
+
+    def handle_data(self, data):
+        if self.in_heading:
+            self.heading_parts.append(data.strip())
+
+    def handle_endtag(self, tag):
+        if self.in_heading and tag in ("h1", "h2", "h3"):
+            heading = " ".join(
+                part for part in self.heading_parts if part
+            )
+
+            if heading:
+                self.headings.append(heading)
+
+            self.in_heading = False
+
+
+def get_random_fact():
+    """
+    Retrieve a random fact from Random Fact Generator.
+
+    If the website is unavailable or its page structure changes,
+    return a fallback message instead of stopping dashboard creation.
+    """
+
+    url = "https://www.randomfactgenerator.com/"
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 KindleWeatherDashboard/1.0"
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            html = response.read().decode(
+                "utf-8",
+                errors="replace",
+            )
+
+        parser = FactParser()
+        parser.feed(html)
+
+        candidates = [
+            heading
+            for heading in parser.headings
+            if heading.strip().lower() != "random fact generator"
+        ]
+
+        if candidates:
+            fact = candidates[0]
+            fact = re.sub(r"\s+", " ", fact).strip()
+
+            return fact
+
+        print("Random fact: no suitable heading found on the webpage.")
+
+        return "Visit randomfactgenerator.com for a random fact."
+
+    except Exception as error:
+        print(f"Random fact error: {error}")
+
+        return "Random fact temporarily unavailable."
+
+
+# ============================================================
+# RAIN FORECAST SECTION
+# ============================================================
 
 def draw_rain_section(draw, weather, date_string, x, y, width):
-    """Draw rain forecasts at 6–9am and 3–6pm for one day."""
+    """
+    Draw morning and afternoon rain forecasts.
+
+    The forecast displays:
+    - Morning hours: 6am, 7am, 8am, 9am
+    - Afternoon/evening hours: 3pm, 4pm, 5pm, 6pm
+    """
+
     hourly = weather.get("hourly", {})
-    times = hourly.get("time", [])
-
-    probabilities = hourly.get("precipitation_probability", [])
-    amounts = hourly.get("precipitation", [])
-
-    # Match forecast times to their array positions.
-    positions = {
-        timestamp: index
-        for index, timestamp in enumerate(times)
-    }
-
-    requested_hours = [6, 7, 8, 9, 15, 16, 17, 18]
+    hourly_times = hourly.get("time", [])
+    rain_probabilities = hourly.get("precipitation_probability", [])
+    rain_amounts = hourly.get("precipitation", [])
+    hourly_codes = hourly.get("weather_code", [])
 
     draw.text(
         (x, y),
-        "HOURLY RAIN",
+        f"RAIN FORECAST - {date_string}",
         font=F_HEADING,
         fill=BLACK,
     )
 
     y += 34
 
-    # Split the eight hours into morning and afternoon.
-    groups = [
-        ("MORNING", requested_hours[:4]),
-        ("AFTERNOON", requested_hours[4:]),
+    hour_groups = [
+        ("MORNING", [6, 7, 8, 9]),
+        ("AFTERNOON", [15, 16, 17, 18]),
     ]
 
-    label_width = 92
-    gap = 5
-    cell_width = (width - label_width - 3 * gap) // 4
+    cell_gap = 5
+    cell_width = (width - cell_gap * 3) // 4
+    cell_height = 62
 
-    for group_name, hours in groups:
+    for group_name, hours in hour_groups:
+        # Smaller label keeps the heading from overlapping the boxes.
         draw.text(
-            (x, y + 7),
+            (x, y + 5),
             group_name,
-            font=F_SMALL,
-            fill=GREY,
+            font=F_TINY,
+            fill=BLACK,
         )
 
-        for i, hour in enumerate(hours):
-            cell_x = x + label_width + i * (cell_width + gap)
+        y += 20
+
+        for index, hour in enumerate(hours):
+            cell_x = x + index * (cell_width + cell_gap)
 
             draw.rectangle(
                 (
                     cell_x,
                     y,
                     cell_x + cell_width,
-                    y + 65,
+                    y + cell_height,
                 ),
-                outline=LIGHT_GREY,
+                outline=BLACK,
                 width=1,
             )
 
+            hour_label = format_hour(hour)
+
             draw.text(
-                (cell_x + 5, y + 5),
-                f"{hour:02d}:00",
+                (cell_x + 5, y + 4),
+                hour_label,
                 font=F_SMALL,
                 fill=BLACK,
             )
 
-            timestamp = f"{date_string}T{hour:02d}:00"
-            index = positions.get(timestamp)
+            matching_index = None
 
-            if index is not None:
-                probability = (
-                    probabilities[index]
-                    if index < len(probabilities)
-                    else None
+            for i, timestamp in enumerate(hourly_times):
+                if timestamp.startswith(date_string) and len(timestamp) >= 13:
+                    try:
+                        timestamp_hour = int(timestamp[11:13])
+
+                        if timestamp_hour == hour:
+                            matching_index = i
+                            break
+
+                    except ValueError:
+                        continue
+
+            if matching_index is not None:
+                probability = rain_probabilities[matching_index]
+                amount = rain_amounts[matching_index]
+                code = hourly_codes[matching_index]
+
+                if probability is None:
+                    probability_text = "--%"
+                else:
+                    probability_text = f"{round(probability)}%"
+
+                draw.text(
+                    (cell_x + 5, y + 25),
+                    probability_text,
+                    font=F_SMALL,
+                    fill=BLACK,
                 )
-                amount = (
-                    amounts[index]
-                    if index < len(amounts)
-                    else None
+
+                description = weather_description(code)
+
+                draw.text(
+                    (cell_x + 5, y + 44),
+                    fit_text(draw, description, F_TINY, cell_width - 10),
+                    font=F_TINY,
+                    fill=BLACK,
                 )
+
             else:
-                probability = None
-                amount = None
+                draw.text(
+                    (cell_x + 5, y + 25),
+                    "--%",
+                    font=F_SMALL,
+                    fill=BLACK,
+                )
 
-            probability_text, amount_text = rain_label(
-                probability, amount
-            )
+        y += cell_height + 10
 
-            draw.text(
-                (cell_x + 5, y + 29),
-                probability_text,
-                font=F_RAIN,
-                fill=BLACK,
-            )
 
-            draw.text(
-                (cell_x + 5, y + 48),
-                amount_text,
-                font=F_SMALL,
-                fill=GREY,
-            )
-
-        y += 72
-
+# ============================================================
+# DASHBOARD RENDERING
+# ============================================================
 
 def draw_dashboard(output_path):
-    """Create the 800 x 600 Kindle dashboard image."""
+    """Create the complete 800 x 600 Kindle dashboard image."""
+
+    print("Fetching weather forecast...")
+
+    weather = fetch_weather()
+
+    current = weather.get("current", {})
+    daily = weather.get("daily", {})
+    daily_dates = daily.get("time", [])
+
+    if len(daily_dates) < 2:
+        raise RuntimeError(
+            "Weather service did not return forecasts for two days."
+        )
+
+    today_date = daily_dates[0]
+    tomorrow_date = daily_dates[1]
+
+    today = dt.date.fromisoformat(today_date)
+    tomorrow = dt.date.fromisoformat(tomorrow_date)
+
+    try:
+        now = dt.datetime.now(ZoneInfo(TIMEZONE))
+    except Exception:
+        now = dt.datetime.now()
+
     image = Image.new("L", (W, H), WHITE)
     draw = ImageDraw.Draw(image)
 
-    now = dt.datetime.now(ZoneInfo(TIMEZONE))
+    # --------------------------------------------------------
+    # HEADER
+    # --------------------------------------------------------
 
-    # Header: day, date and location on one line.
-    header = (
-        f"{now.strftime('%A')} {now.day} "
-        f"{now.strftime('%B %Y')}  |  {CITY}"
+    header_text = (
+        f"{now.strftime('%A')} "
+        f"{now.day} {now.strftime('%B %Y')} | {CITY}"
     )
 
     draw.text(
-        (25, 15),
-        fit_text(draw, header, F_TITLE, W - 50),
+        (25, 18),
+        fit_text(draw, header_text, F_TITLE, W - 50),
         font=F_TITLE,
         fill=BLACK,
     )
 
-    draw.line((25, 58, W - 25, 58), fill=BLACK, width=3)
+    draw.line(
+        (25, 60, W - 25, 60),
+        fill=BLACK,
+        width=2,
+    )
+
+    # --------------------------------------------------------
+    # CURRENT CONDITIONS
+    # --------------------------------------------------------
+
+    current_temperature = current.get("temperature_2m")
+    current_code = current.get("weather_code")
+    feels_like = current.get("apparent_temperature")
+    humidity = current.get("relative_humidity_2m")
+
+    draw.text(
+        (30, 72),
+        "CURRENT CONDITIONS",
+        font=F_HEADING,
+        fill=BLACK,
+    )
+
+    draw.text(
+        (30, 105),
+        format_temperature(current_temperature),
+        font=F_TEMP,
+        fill=BLACK,
+    )
+
+    current_description = weather_description(current_code)
+
+    draw.text(
+        (200, 115),
+        fit_text(draw, current_description, F_NORMAL, 300),
+        font=F_NORMAL,
+        fill=BLACK,
+    )
+
+    if feels_like is not None:
+        draw.text(
+            (200, 143),
+            f"Feels like {format_temperature(feels_like)}",
+            font=F_SMALL,
+            fill=BLACK,
+        )
+
+    if humidity is not None:
+        draw.text(
+            (480, 115),
+            f"Humidity: {humidity}%",
+            font=F_SMALL,
+            fill=BLACK,
+        )
+
+    # --------------------------------------------------------
+    # TODAY AND TOMORROW FORECASTS
+    # --------------------------------------------------------
+
+    column_width = 360
+    left_x = 30
+    right_x = 410
+
+    draw.line(
+        (400, 175, 400, 410),
+        fill=BLACK,
+        width=1,
+    )
+
+    # Today's weather.
+    draw.text(
+        (left_x, 180),
+        f"TODAY - {today.strftime('%a %-d %b')}",
+        font=F_HEADING,
+        fill=BLACK,
+    )
+
+    today_high = daily["temperature_2m_max"][0]
+    today_low = daily["temperature_2m_min"][0]
+    today_code = daily["weather_code"][0]
+
+    draw.text(
+        (left_x, 210),
+        f"{format_temperature(today_high)} / "
+        f"{format_temperature(today_low)}",
+        font=F_NORMAL,
+        fill=BLACK,
+    )
+
+    draw.text(
+        (left_x, 237),
+        fit_text(
+            draw,
+            weather_description(today_code),
+            F_SMALL,
+            column_width,
+        ),
+        font=F_SMALL,
+        fill=BLACK,
+    )
+
+    today_rain_probability = daily.get(
+        "precipitation_probability_max",
+        [None, None],
+    )[0]
+
+    today_rain_amount = daily.get(
+        "precipitation_sum",
+        [None, None],
+    )[0]
+
+    draw.text(
+        (left_x, 258),
+        fit_text(
+            draw,
+            rain_label(today_rain_probability, today_rain_amount),
+            F_SMALL,
+            column_width,
+        ),
+        font=F_SMALL,
+        fill=BLACK,
+    )
+
+    # Tomorrow's weather.
+    draw.text(
+        (right_x, 180),
+        f"TOMORROW - {tomorrow.strftime('%a %-d %b')}",
+        font=F_HEADING,
+        fill=BLACK,
+    )
+
+    tomorrow_high = daily["temperature_2m_max"][1]
+    tomorrow_low = daily["temperature_2m_min"][1]
+    tomorrow_code = daily["weather_code"][1]
+
+    draw.text(
+        (right_x, 210),
+        f"{format_temperature(tomorrow_high)} / "
+        f"{format_temperature(tomorrow_low)}",
+        font=F_NORMAL,
+        fill=BLACK,
+    )
+
+    draw.text(
+        (right_x, 237),
+        fit_text(
+            draw,
+            weather_description(tomorrow_code),
+            F_SMALL,
+            column_width,
+        ),
+        font=F_SMALL,
+        fill=BLACK,
+    )
+
+    tomorrow_rain_probability = daily.get(
+        "precipitation_probability_max",
+        [None, None],
+    )[1]
+
+    tomorrow_rain_amount = daily.get(
+        "precipitation_sum",
+        [None, None],
+    )[1]
+
+    draw.text(
+        (right_x, 258),
+        fit_text(
+            draw,
+            rain_label(
+                tomorrow_rain_probability,
+                tomorrow_rain_amount,
+            ),
+            F_SMALL,
+            column_width,
+        ),
+        font=F_SMALL,
+        fill=BLACK,
+    )
+
+    # --------------------------------------------------------
+    # RAIN FORECASTS
+    # --------------------------------------------------------
+
+    draw_rain_section(
+        draw,
+        weather,
+        today_date,
+        left_x,
+        290,
+        column_width,
+    )
+
+    draw_rain_section(
+        draw,
+        weather,
+        tomorrow_date,
+        right_x,
+        290,
+        column_width,
+    )
+
+    # --------------------------------------------------------
+    # RANDOM FACT SECTION
+    # --------------------------------------------------------
+
+    draw.line(
+        (25, 465, W - 25, 465),
+        fill=BLACK,
+        width=2,
+    )
+
+    draw.text(
+        (30, 473),
+        "DID YOU KNOW?",
+        font=F_HEADING,
+        fill=BLACK,
+    )
+
+    print("Fetching a random fact...")
+
+    fact = get_random_fact()
+
+    fact_lines = wrap_text(
+        draw,
+        fact,
+        F_SMALL,
+        W - 60,
+    )
+
+    for index, line in enumerate(fact_lines[:3]):
+        draw.text(
+            (30, 505 + index * 20),
+            line,
+            font=F_SMALL,
+            fill=BLACK,
+        )
+
+    # --------------------------------------------------------
+    # FOOTER
+    # --------------------------------------------------------
+
+    draw.line(
+        (25, 580, W - 25, 580),
+        fill=BLACK,
+        width=1,
+    )
+
+    footer_text = f"Updated {now.strftime('%H:%M')} | Weather: Open-Meteo"
+
+    draw.text(
+        (30, 583),
+        fit_text(draw, footer_text, F_TINY, W - 60),
+        font=F_TINY,
+        fill=BLACK,
+    )
+
+    # --------------------------------------------------------
+    # SAVE IMAGE
+    # --------------------------------------------------------
+
+    output_directory = os.path.dirname(output_path)
+
+    if output_directory:
+        os.makedirs(output_directory, exist_ok=True)
+
+    image.save(output_path, format="PNG")
+
+    print(f"Dashboard saved to: {output_path}")
+
+
+# ============================================================
+# MAIN PROGRAM
+# ============================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate the Kindle weather dashboard."
+    )
+
+    parser.add_argument(
+        "--mode",
+        default="combo",
+        help="Dashboard mode (retained for workflow compatibility).",
+    )
+
+    parser.add_argument(
+        "--out",
+        default="docs/kindle.png",
+        help="Output PNG path.",
+    )
+
+    args = parser.parse_args()
 
     try:
-        weather = fetch_weather()
-        current = weather["current"]
-        daily = weather["daily"]
-        dates = daily["time"]
-
-        today_date = dates[0]
-        tomorrow_date = dates[1]
-
-        today = {
-            "temperature": round(current["temperature_2m"]),
-            "condition": WEATHER_CODES.get(
-                current["weather_code"], "Unknown"
-            ),
-            "high": round(daily["temperature_2m_max"][0]),
-            "low": round(daily["temperature_2m_min"][0]),
-        }
-
-        tomorrow = {
-            "temperature": None,
-            "condition": WEATHER_CODES.get(
-                daily["weather_code"][1], "Unknown"
-            ),
-            "high": round(daily["temperature_2m_max"][1]),
-            "low": round(daily["temperature_2m_min"][1]),
-        }
-
-        # Weather headings.
-        column_width = 360
-        left_x = 30
-        right_x = 410
-
-        draw.text(
-            (left_x, 75),
-            "TODAY",
-            font=F_HEADING,
-            fill=BLACK,
-        )
-
-        draw.text(
-            (right_x, 75),
-            "TOMORROW",
-            font=F_HEADING,
-            fill=BLACK,
-        )
-
-        # Today's weather.
-        draw.text(
-            (left_x, 110),
-            f"{today['temperature']}°C",
-            font=F_TEMP,
-            fill=BLACK,
-        )
-
-        draw.text(
-            (left_x, 158),
-            fit_text(draw, today["condition"], F_NORMAL, 350),
-            font=F_NORMAL,
-            fill=GREY,
-        )
-
-        draw.text(
-            (left_x, 185),
-            f"High {today['high']}°  Low {today['low']}°",
-            font=F_NORMAL,
-            fill=BLACK,
-        )
-
-        # Tomorrow's forecast.
-        draw.text(
-            (right_x, 110),
-            f"High {tomorrow['high']}°",
-            font=F_TEMP,
-            fill=BLACK,
-        )
-
-        draw.text(
-            (right_x, 158),
-            fit_text(
-                draw, tomorrow["condition"], F_NORMAL, 350
-            ),
-            font=F_NORMAL,
-            fill=GREY,
-        )
-
-        draw.text(
-            (right_x, 185),
-            f"Low {tomorrow['low']}°",
-            font=F_NORMAL,
-            fill=BLACK,
-        )
-
-        draw.line((25, 220, W - 25, 220), fill=BLACK, width=2)
-
-        # Hourly rain forecast for each day.
-        draw_rain_section(
-            draw, weather, today_date, left_x, 235, column_width
-        )
-
-        draw_rain_section(
-            draw, weather, tomorrow_date, right_x, 235, column_width
-        )
-
-        # Footer.
-        draw.line((25, 565, W - 25, 565), fill=LIGHT_GREY, width=1)
-
-        draw.text(
-            (25, 573),
-            "Rain: probability (%) and expected amount (mm)",
-            font=F_SMALL,
-            fill=GREY,
-        )
+        draw_dashboard(args.out)
 
     except Exception as error:
-        draw.text(
-            (30, 100),
-            "Weather forecast unavailable",
-            font=F_HEADING,
-            fill=BLACK,
-        )
-
-        draw.text(
-            (30, 145),
-            "Please check the internet connection",
-            font=F_NORMAL,
-            fill=GREY,
-        )
-
-        print(f"Weather error: {error}")
-
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    image.save(output_path, format="PNG")
-    print(f"Dashboard saved to {output_path}")
+        print(f"Dashboard generation failed: {error}")
+        raise
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", default="combo")
-    parser.add_argument("--out", default="docs/kindle.png")
-    args = parser.parse_args()
-
-    draw_dashboard(args.out)
+    main()
