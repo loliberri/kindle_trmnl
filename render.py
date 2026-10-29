@@ -29,7 +29,7 @@ CITY = os.environ.get("KD_CITY", "Dublin")
 
 
 # ============================================================
-# FONTS
+# FONT SETTINGS
 # ============================================================
 
 def load_font(style, size):
@@ -60,8 +60,6 @@ F_HEADING = load_font("bold", 21)
 F_TEMP = load_font("bold", 38)
 F_NORMAL = load_font("regular", 17)
 F_SMALL = load_font("regular", 15)
-
-# Smaller font to stop MORNING and AFTERNOON overlapping their boxes.
 F_TINY = load_font("regular", 12)
 
 
@@ -106,11 +104,7 @@ WEATHER_CODES = {
 # ============================================================
 
 def fetch_weather():
-    """
-    Retrieve today's and tomorrow's weather from Open-Meteo.
-
-    No API key is required.
-    """
+    """Retrieve today's and tomorrow's forecast from Open-Meteo."""
 
     parameters = {
         "latitude": LATITUDE,
@@ -151,9 +145,7 @@ def fetch_weather():
     )
 
     with urllib.request.urlopen(request, timeout=20) as response:
-        data = json.loads(response.read().decode("utf-8"))
-
-    return data
+        return json.loads(response.read().decode("utf-8"))
 
 
 def weather_description(code):
@@ -166,7 +158,7 @@ def weather_description(code):
 
 
 def format_temperature(value):
-    """Format a temperature as a whole number of degrees Celsius."""
+    """Format a temperature in Celsius."""
 
     if value is None:
         return "--°C"
@@ -175,7 +167,7 @@ def format_temperature(value):
 
 
 def format_hour(hour):
-    """Convert a 24-hour hour number into a label such as 6am or 5pm."""
+    """Convert a 24-hour number to a label such as 6am or 5pm."""
 
     suffix = "am" if hour < 12 else "pm"
     hour_12 = hour % 12 or 12
@@ -184,7 +176,7 @@ def format_hour(hour):
 
 
 def rain_label(probability, amount):
-    """Create a short precipitation description."""
+    """Create a short precipitation summary."""
 
     if probability is None:
         probability_text = "?"
@@ -204,21 +196,23 @@ def rain_label(probability, amount):
 # ============================================================
 
 def fit_text(draw, text, font, max_width):
-    """Shorten text until it fits within the specified width."""
+    """Shorten text until it fits within the available width."""
 
     text = str(text)
 
     if draw.textlength(text, font=font) <= max_width:
         return text
 
-    while text and draw.textlength(text + "...", font=font) > max_width:
+    while text and draw.textlength(
+        text + "...", font=font
+    ) > max_width:
         text = text[:-1]
 
     return text + "..." if text else "..."
 
 
 def wrap_text(draw, text, font, max_width):
-    """Wrap a sentence into lines that fit within a specified width."""
+    """Wrap text into lines that fit within a specified width."""
 
     words = str(text).split()
     lines = []
@@ -233,7 +227,6 @@ def wrap_text(draw, text, font, max_width):
             if current_line:
                 lines.append(current_line)
 
-            # Handle an unusually long individual word.
             if draw.textlength(word, font=font) > max_width:
                 lines.append(fit_text(draw, word, font, max_width))
                 current_line = ""
@@ -244,6 +237,12 @@ def wrap_text(draw, text, font, max_width):
         lines.append(current_line)
 
     return lines
+
+
+def format_date_heading(date_value):
+    """Format a date without relying on platform-specific %-d."""
+
+    return f"{date_value.strftime('%a')} {date_value.day} {date_value.strftime('%b')}"
 
 
 # ============================================================
@@ -282,10 +281,10 @@ class FactParser(HTMLParser):
 
 def get_random_fact():
     """
-    Retrieve a random fact from Random Fact Generator.
+    Attempt to retrieve a fact from Random Fact Generator.
 
-    If the website is unavailable or its page structure changes,
-    return a fallback message instead of stopping dashboard creation.
+    If the website cannot be accessed or the page structure changes,
+    return a fallback message so dashboard generation can continue.
     """
 
     url = "https://www.randomfactgenerator.com/"
@@ -314,12 +313,10 @@ def get_random_fact():
         ]
 
         if candidates:
-            fact = candidates[0]
-            fact = re.sub(r"\s+", " ", fact).strip()
-
+            fact = re.sub(r"\s+", " ", candidates[0]).strip()
             return fact
 
-        print("Random fact: no suitable heading found on the webpage.")
+        print("Random fact: no suitable heading found.")
 
         return "Visit randomfactgenerator.com for a random fact."
 
@@ -330,32 +327,26 @@ def get_random_fact():
 
 
 # ============================================================
-# RAIN FORECAST SECTION
+# COMPACT HOURLY RAIN FORECAST
 # ============================================================
 
 def draw_rain_section(draw, weather, date_string, x, y, width):
     """
-    Draw morning and afternoon rain forecasts.
+    Draw compact hourly rain forecast boxes.
 
-    The forecast displays:
-    - Morning hours: 6am, 7am, 8am, 9am
-    - Afternoon/evening hours: 3pm, 4pm, 5pm, 6pm
+    The RAIN FORECAST heading has been removed.
+
+    Morning hours: 6am, 7am, 8am, 9am
+    Afternoon hours: 3pm, 4pm, 5pm, 6pm
     """
 
     hourly = weather.get("hourly", {})
     hourly_times = hourly.get("time", [])
     rain_probabilities = hourly.get("precipitation_probability", [])
-    rain_amounts = hourly.get("precipitation", [])
     hourly_codes = hourly.get("weather_code", [])
 
-    draw.text(
-        (x, y),
-        f"RAIN FORECAST - {date_string}",
-        font=F_HEADING,
-        fill=BLACK,
-    )
-
-    y += 34
+    # No large heading: start directly with the morning row.
+    y += 5
 
     hour_groups = [
         ("MORNING", [6, 7, 8, 9]),
@@ -364,18 +355,19 @@ def draw_rain_section(draw, weather, date_string, x, y, width):
 
     cell_gap = 5
     cell_width = (width - cell_gap * 3) // 4
-    cell_height = 62
+    cell_height = 48
 
     for group_name, hours in hour_groups:
-        # Smaller label keeps the heading from overlapping the boxes.
+
+        # Smaller group label to avoid overlapping the boxes.
         draw.text(
-            (x, y + 5),
+            (x, y + 2),
             group_name,
             font=F_TINY,
             fill=BLACK,
         )
 
-        y += 20
+        y += 15
 
         for index, hour in enumerate(hours):
             cell_x = x + index * (cell_width + cell_gap)
@@ -391,11 +383,10 @@ def draw_rain_section(draw, weather, date_string, x, y, width):
                 width=1,
             )
 
-            hour_label = format_hour(hour)
-
+            # Hour label, e.g. 6am or 5pm.
             draw.text(
-                (cell_x + 5, y + 4),
-                hour_label,
+                (cell_x + 5, y + 2),
+                format_hour(hour),
                 font=F_SMALL,
                 fill=BLACK,
             )
@@ -416,7 +407,6 @@ def draw_rain_section(draw, weather, date_string, x, y, width):
 
             if matching_index is not None:
                 probability = rain_probabilities[matching_index]
-                amount = rain_amounts[matching_index]
                 code = hourly_codes[matching_index]
 
                 if probability is None:
@@ -425,7 +415,7 @@ def draw_rain_section(draw, weather, date_string, x, y, width):
                     probability_text = f"{round(probability)}%"
 
                 draw.text(
-                    (cell_x + 5, y + 25),
+                    (cell_x + 5, y + 19),
                     probability_text,
                     font=F_SMALL,
                     fill=BLACK,
@@ -434,15 +424,20 @@ def draw_rain_section(draw, weather, date_string, x, y, width):
                 description = weather_description(code)
 
                 draw.text(
-                    (cell_x + 5, y + 44),
-                    fit_text(draw, description, F_TINY, cell_width - 10),
+                    (cell_x + 5, y + 34),
+                    fit_text(
+                        draw,
+                        description,
+                        F_TINY,
+                        cell_width - 10,
+                    ),
                     font=F_TINY,
                     fill=BLACK,
                 )
 
             else:
                 draw.text(
-                    (cell_x + 5, y + 25),
+                    (cell_x + 5, y + 19),
                     "--%",
                     font=F_SMALL,
                     fill=BLACK,
@@ -530,11 +525,14 @@ def draw_dashboard(output_path):
         fill=BLACK,
     )
 
-    current_description = weather_description(current_code)
-
     draw.text(
         (200, 115),
-        fit_text(draw, current_description, F_NORMAL, 300),
+        fit_text(
+            draw,
+            weather_description(current_code),
+            F_NORMAL,
+            300,
+        ),
         font=F_NORMAL,
         fill=BLACK,
     )
@@ -564,15 +562,15 @@ def draw_dashboard(output_path):
     right_x = 410
 
     draw.line(
-        (400, 175, 400, 410),
+        (400, 175, 400, 435),
         fill=BLACK,
         width=1,
     )
 
-    # Today's weather.
+    # TODAY
     draw.text(
         (left_x, 180),
-        f"TODAY - {today.strftime('%a %-d %b')}",
+        f"TODAY - {format_date_heading(today)}",
         font=F_HEADING,
         fill=BLACK,
     )
@@ -615,7 +613,10 @@ def draw_dashboard(output_path):
         (left_x, 258),
         fit_text(
             draw,
-            rain_label(today_rain_probability, today_rain_amount),
+            rain_label(
+                today_rain_probability,
+                today_rain_amount,
+            ),
             F_SMALL,
             column_width,
         ),
@@ -623,10 +624,10 @@ def draw_dashboard(output_path):
         fill=BLACK,
     )
 
-    # Tomorrow's weather.
+    # TOMORROW
     draw.text(
         (right_x, 180),
-        f"TOMORROW - {tomorrow.strftime('%a %-d %b')}",
+        f"TOMORROW - {format_date_heading(tomorrow)}",
         font=F_HEADING,
         fill=BLACK,
     )
@@ -681,7 +682,7 @@ def draw_dashboard(output_path):
     )
 
     # --------------------------------------------------------
-    # RAIN FORECASTS
+    # COMPACT HOURLY RAIN BOXES
     # --------------------------------------------------------
 
     draw_rain_section(
@@ -703,19 +704,19 @@ def draw_dashboard(output_path):
     )
 
     # --------------------------------------------------------
-    # RANDOM FACT SECTION
+    # SHORT DID YOU KNOW? SECTION
     # --------------------------------------------------------
 
     draw.line(
-        (25, 465, W - 25, 465),
+        (25, 440, W - 25, 440),
         fill=BLACK,
-        width=2,
+        width=1,
     )
 
     draw.text(
-        (30, 473),
+        (30, 447),
         "DID YOU KNOW?",
-        font=F_HEADING,
+        font=F_SMALL,
         fill=BLACK,
     )
 
@@ -723,18 +724,25 @@ def draw_dashboard(output_path):
 
     fact = get_random_fact()
 
+    # Limit the fact to keep the layout compact.
+    max_fact_characters = 120
+
+    if len(fact) > max_fact_characters:
+        fact = fact[:max_fact_characters].rsplit(" ", 1)[0] + "..."
+
     fact_lines = wrap_text(
         draw,
         fact,
-        F_SMALL,
+        F_TINY,
         W - 60,
     )
 
-    for index, line in enumerate(fact_lines[:3]):
+    # Display no more than two lines.
+    for index, line in enumerate(fact_lines[:2]):
         draw.text(
-            (30, 505 + index * 20),
+            (30, 468 + index * 16),
             line,
-            font=F_SMALL,
+            font=F_TINY,
             fill=BLACK,
         )
 
@@ -743,15 +751,17 @@ def draw_dashboard(output_path):
     # --------------------------------------------------------
 
     draw.line(
-        (25, 580, W - 25, 580),
+        (25, 555, W - 25, 555),
         fill=BLACK,
         width=1,
     )
 
-    footer_text = f"Updated {now.strftime('%H:%M')} | Weather: Open-Meteo"
+    footer_text = (
+        f"Updated {now.strftime('%H:%M')} | Weather: Open-Meteo"
+    )
 
     draw.text(
-        (30, 583),
+        (30, 560),
         fit_text(draw, footer_text, F_TINY, W - 60),
         font=F_TINY,
         fill=BLACK,
