@@ -2,10 +2,8 @@ import argparse
 import datetime as dt
 import json
 import os
-import re
 import urllib.parse
 import urllib.request
-from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
@@ -246,84 +244,44 @@ def format_date_heading(date_value):
 
 
 # ============================================================
-# RANDOM FACT
+# DAILY USELESS FACT
 # ============================================================
-
-class FactParser(HTMLParser):
-    """Extract headings from the Random Fact Generator webpage."""
-
-    def __init__(self):
-        super().__init__()
-        self.in_heading = False
-        self.heading_parts = []
-        self.headings = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in ("h1", "h2", "h3"):
-            self.in_heading = True
-            self.heading_parts = []
-
-    def handle_data(self, data):
-        if self.in_heading:
-            self.heading_parts.append(data.strip())
-
-    def handle_endtag(self, tag):
-        if self.in_heading and tag in ("h1", "h2", "h3"):
-            heading = " ".join(
-                part for part in self.heading_parts if part
-            )
-
-            if heading:
-                self.headings.append(heading)
-
-            self.in_heading = False
-
 
 def get_random_fact():
     """
-    Attempt to retrieve a fact from Random Fact Generator.
+    Retrieve today's English fact from the Useless Facts API.
 
-    If the website cannot be accessed or the page structure changes,
-    return a fallback message so dashboard generation can continue.
+    The /today endpoint returns the same fact throughout the day.
+    If the API cannot be reached, return a fallback message so the
+    dashboard can still be generated.
     """
 
-    url = "https://www.randomfactgenerator.com/"
+    url = "https://uselessfacts.jsph.pl/api/v2/facts/today?language=en"
 
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0 KindleWeatherDashboard/1.0"
+            "User-Agent": "KindleWeatherDashboard/1.0",
+            "Accept": "application/json",
         },
     )
 
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
-            html = response.read().decode(
-                "utf-8",
-                errors="replace",
-            )
+            data = json.loads(response.read().decode("utf-8"))
 
-        parser = FactParser()
-        parser.feed(html)
+        fact = data.get("text", "").strip()
 
-        candidates = [
-            heading
-            for heading in parser.headings
-            if heading.strip().lower() != "random fact generator"
-        ]
-
-        if candidates:
-            fact = re.sub(r"\s+", " ", candidates[0]).strip()
+        if fact:
+            print("Daily fact retrieved successfully.")
             return fact
 
-        print("Random fact: no suitable heading found.")
-
-        return "Visit randomfactgenerator.com for a random fact."
+        print("Daily fact error: API response did not contain fact text.")
+        return "Today's fact is temporarily unavailable."
 
     except Exception as error:
-        print(f"Random fact error: {error}")
-
-        return "Random fact temporarily unavailable."
+        print(f"Daily fact error: {error}")
+        return "Today's fact is temporarily unavailable."
 
 
 # ============================================================
@@ -704,7 +662,7 @@ def draw_dashboard(output_path):
     )
 
     # --------------------------------------------------------
-    # SHORT DID YOU KNOW? SECTION
+    # TODAY'S USELESS FACT
     # --------------------------------------------------------
 
     draw.line(
@@ -715,12 +673,12 @@ def draw_dashboard(output_path):
 
     draw.text(
         (30, 447),
-        "DID YOU KNOW?",
+        "TODAY'S USELESS FACT",
         font=F_SMALL,
         fill=BLACK,
     )
 
-    print("Fetching a random fact...")
+    print("Fetching today's useless fact...")
 
     fact = get_random_fact()
 
